@@ -1,5 +1,5 @@
 from data.data_pipe import de_preprocess, get_train_loader, get_val_data
-from model import Backbone, Arcface, MobileFaceNet, Am_softmax, l2_norm
+from model import Backbone, Arcface, MobileFaceNet, l2_norm
 from verifacation import evaluate
 import torch
 from torch import optim
@@ -54,7 +54,7 @@ class face_learner(object):
             self.board_loss_every = len(self.loader)//100
             self.evaluate_every = len(self.loader)//10
             self.save_every = len(self.loader)//5
-            self.agedb_30, self.cfp_fp, self.lfw, self.agedb_30_issame, self.cfp_fp_issame, self.lfw_issame = get_val_data(self.loader.dataset.root.parent)
+            # self.agedb_30, self.cfp_fp, self.lfw, self.agedb_30_issame, self.cfp_fp_issame, self.lfw_issame = get_val_data(self.loader.dataset.root.parent)
         else:
             self.threshold = conf.threshold
     
@@ -183,15 +183,15 @@ class face_learner(object):
 
     def train(self, conf, epochs):
         self.model.train()
-        running_loss = 0.            
+        running_loss = 0.
         for e in range(epochs):
             print('epoch {} started'.format(e))
             if e == self.milestones[0]:
                 self.schedule_lr()
             if e == self.milestones[1]:
-                self.schedule_lr()      
+                self.schedule_lr()
             if e == self.milestones[2]:
-                self.schedule_lr()                                 
+                self.schedule_lr()
             for imgs, labels in tqdm(iter(self.loader)):
                 imgs = imgs.to(conf.device)
                 labels = labels.to(conf.device)
@@ -202,12 +202,12 @@ class face_learner(object):
                 loss.backward()
                 running_loss += loss.item()
                 self.optimizer.step()
-                
+
                 if self.step % self.board_loss_every == 0 and self.step != 0:
                     loss_board = running_loss / self.board_loss_every
                     self.writer.add_scalar('train_loss', loss_board, self.step)
                     running_loss = 0.
-                
+
                 if self.step % self.evaluate_every == 0 and self.step != 0:
                     accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.agedb_30, self.agedb_30_issame)
                     self.board_val('agedb_30', accuracy, best_threshold, roc_curve_tensor)
@@ -218,7 +218,7 @@ class face_learner(object):
                     self.model.train()
                 if self.step % self.save_every == 0 and self.step != 0:
                     self.save_state(conf, accuracy)
-                    
+
                 self.step += 1
                 
         self.save_state(conf, accuracy, to_save_folder=True, extra='final')

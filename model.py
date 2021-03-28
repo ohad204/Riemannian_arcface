@@ -1,5 +1,7 @@
 from torch.nn import Linear, Conv2d, BatchNorm1d, BatchNorm2d, PReLU, ReLU, Sigmoid, Dropout2d, Dropout, AvgPool2d, MaxPool2d, AdaptiveAvgPool2d, Sequential, Module, Parameter
 import torch.nn.functional as F
+from torch.autograd import Variable as V
+from torch.autograd import Function
 import torch
 from collections import namedtuple
 import math
@@ -142,11 +144,13 @@ class Backbone(Module):
 ##################################  MobileFaceNet #############################################################
     
 class Conv_block(Module):
+
     def __init__(self, in_c, out_c, kernel=(1, 1), stride=(1, 1), padding=(0, 0), groups=1):
         super(Conv_block, self).__init__()
         self.conv = Conv2d(in_c, out_channels=out_c, kernel_size=kernel, groups=groups, stride=stride, padding=padding, bias=False)
         self.bn = BatchNorm2d(out_c)
         self.prelu = PReLU(out_c)
+
     def forward(self, x):
         x = self.conv(x)
         x = self.bn(x)
@@ -154,22 +158,26 @@ class Conv_block(Module):
         return x
 
 class Linear_block(Module):
+
     def __init__(self, in_c, out_c, kernel=(1, 1), stride=(1, 1), padding=(0, 0), groups=1):
         super(Linear_block, self).__init__()
         self.conv = Conv2d(in_c, out_channels=out_c, kernel_size=kernel, groups=groups, stride=stride, padding=padding, bias=False)
         self.bn = BatchNorm2d(out_c)
+
     def forward(self, x):
         x = self.conv(x)
         x = self.bn(x)
         return x
 
 class Depth_Wise(Module):
+
      def __init__(self, in_c, out_c, residual = False, kernel=(3, 3), stride=(2, 2), padding=(1, 1), groups=1):
         super(Depth_Wise, self).__init__()
         self.conv = Conv_block(in_c, out_c=groups, kernel=(1, 1), padding=(0, 0), stride=(1, 1))
         self.conv_dw = Conv_block(groups, groups, groups=groups, kernel=kernel, padding=padding, stride=stride)
         self.project = Linear_block(groups, out_c, kernel=(1, 1), padding=(0, 0), stride=(1, 1))
         self.residual = residual
+
      def forward(self, x):
         if self.residual:
             short_cut = x
@@ -183,16 +191,27 @@ class Depth_Wise(Module):
         return output
 
 class Residual(Module):
+
     def __init__(self, c, num_block, groups, kernel=(3, 3), stride=(1, 1), padding=(1, 1)):
         super(Residual, self).__init__()
         modules = []
         for _ in range(num_block):
             modules.append(Depth_Wise(c, c, residual=True, kernel=kernel, padding=padding, stride=stride, groups=groups))
         self.model = Sequential(*modules)
+
     def forward(self, x):
         return self.model(x)
 
+class SPD(Module):
+
+    def forward(self, x):
+        out = torch.zeros_like(x)
+        for i in range(x.shape[0]):
+            out[i, :, :] = torch.matmul(x[i, :, :], x[i, :, :].permute((1, 0)))
+        return out
+
 class MobileFaceNet(Module):
+
     def __init__(self, embedding_size):
         super(MobileFaceNet, self).__init__()
         self.conv1 = Conv_block(3, 64, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
@@ -208,6 +227,9 @@ class MobileFaceNet(Module):
         self.conv_6_flatten = Flatten()
         self.linear = Linear(512, embedding_size, bias=False)
         self.bn = BatchNorm1d(embedding_size)
+        self.spd_dim = (-1, int(math.sqrt(embedding_size)), int(math.sqrt(embedding_size)))
+        self.spd = SPD()
+        self.mlog = MatrixLog()
     
     def forward(self, x):
         out = self.conv1(x)
@@ -235,72 +257,65 @@ class MobileFaceNet(Module):
         out = self.linear(out)
 
         out = self.bn(out)
-        return l2_norm(out)
+
+        out = out.reshape(self.spd_dim)
+
+        out = self.spd(out)
+
+        out = self.mlog(out)
+
+        return out
 
 ##################################  Arcface head #############################################################
 
 class Arcface(Module):
+
     # implementation of additive margin softmax loss in https://arxiv.org/abs/1801.05599    
-    def __init__(self, embedding_size=512, classnum=51332,  s=64., m=0.5):
+    def __init__(self, embedding_size=512, classnum=51332, m=10):
         super(Arcface, self).__init__()
+        spd_dim = int(math.sqrt(embedding_size))
         self.classnum = classnum
-        self.kernel = Parameter(torch.Tensor(embedding_size,classnum))
+        self.kernel = Parameter(torch.Tensor(classnum, spd_dim, spd_dim))
         # initial kernel
         self.kernel.data.uniform_(-1, 1).renorm_(2,1,1e-5).mul_(1e5)
-        self.m = m # the margin value, default is 0.5
-        self.s = s # scalar value default is 64, see normface https://arxiv.org/abs/1704.06369
-        self.cos_m = math.cos(m)
-        self.sin_m = math.sin(m)
-        self.mm = self.sin_m * m  # issue 1
-        self.threshold = math.cos(math.pi - m)
+        self.spd = SPD()
+        self.mlog = MatrixLog()
+        self.norm = FrobeniusNorm()
+        self.m = m # the margin value
+
     def forward(self, embbedings, label):
         # weights norm
-        nB = len(embbedings)
-        kernel_norm = l2_norm(self.kernel,axis=0)
-        # cos(theta+m)
-        cos_theta = torch.mm(embbedings,kernel_norm)
-#         output = torch.mm(embbedings,kernel_norm)
-        cos_theta = cos_theta.clamp(-1,1) # for numerical stability
-        cos_theta_2 = torch.pow(cos_theta, 2)
-        sin_theta_2 = 1 - cos_theta_2
-        sin_theta = torch.sqrt(sin_theta_2)
-        cos_theta_m = (cos_theta * self.cos_m - sin_theta * self.sin_m)
-        # this condition controls the theta+m should in range [0, pi]
-        #      0<=theta+m<=pi
-        #     -m<=theta<=pi-m
-        cond_v = cos_theta - self.threshold
-        cond_mask = cond_v <= 0
-        keep_val = (cos_theta - self.mm) # when theta not in [0,pi], use cosface instead
-        cos_theta_m[cond_mask] = keep_val[cond_mask]
-        output = cos_theta * 1.0 # a little bit hacky way to prevent in_place operation on cos_theta
-        idx_ = torch.arange(0, nB, dtype=torch.long)
-        output[idx_, label] = cos_theta_m[idx_, label]
-        output *= self.s # scale up in order to make softmax work, first introduced in normface
+        # kernel_transpose = self.kernel.permute(0, 2, 1)
+        kernel_spd = torch.matmul(self.kernel, self.kernel)
+        kernel_log = self.mlog(kernel_spd)
+        output = self.norm(embbedings, kernel_log)
+
+        # margin
+        idx_ = torch.arange(0, len(label), dtype=torch.long)
+        output[idx_, label] -= self.m
+
         return output
 
-##################################  Cosface head #############################################################    
-    
-class Am_softmax(Module):
-    # implementation of additive margin softmax loss in https://arxiv.org/abs/1801.05599    
-    def __init__(self,embedding_size=512,classnum=51332):
-        super(Am_softmax, self).__init__()
-        self.classnum = classnum
-        self.kernel = Parameter(torch.Tensor(embedding_size,classnum))
-        # initial kernel
-        self.kernel.data.uniform_(-1, 1).renorm_(2,1,1e-5).mul_(1e5)
-        self.m = 0.35 # additive margin recommended by the paper
-        self.s = 30. # see normface https://arxiv.org/abs/1704.06369
-    def forward(self,embbedings,label):
-        kernel_norm = l2_norm(self.kernel,axis=0)
-        cos_theta = torch.mm(embbedings,kernel_norm)
-        cos_theta = cos_theta.clamp(-1,1) # for numerical stability
-        phi = cos_theta - self.m
-        label = label.view(-1,1) #size=(B,1)
-        index = cos_theta.data * 0.0 #size=(B,Classnum)
-        index.scatter_(1,label.data.view(-1,1),1)
-        index = index.byte()
-        output = cos_theta * 1.0
-        output[index] = phi[index] #only change the correct predicted output
-        output *= self.s # scale up in order to make softmax work, first introduced in normface
-        return output
+##################################  Riemanian Distance #############################################################
 
+class MatrixLog(Module):
+
+    def forward(self, spd):
+        # S, U = self.eiglayer(spd)
+        S, U = torch.symeig(spd, eigenvectors=True)
+        S_log = torch.log(S)
+        S_log = torch.stack([torch.diag(s) for s in S_log], 0)
+        spd_log = torch.matmul(torch.matmul(U, S_log), U.permute(0, 2, 1))
+
+        return spd_log
+
+class FrobeniusNorm(Module):
+
+    def forward(self, SPD_1, SPD_2):
+        Norm = torch.zeros(SPD_1.shape[0], SPD_2.shape[0])
+        for i, spd_1 in enumerate(SPD_1):
+            for j, spd_2 in enumerate(SPD_2):
+                difference = spd_1 - spd_2
+                Norm[i, j] = difference.pow(2).sum().sqrt()
+
+        return Norm
