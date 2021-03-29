@@ -23,6 +23,11 @@ class face_learner(object):
         else:
             self.model = Backbone(conf.net_depth, conf.drop_ratio, conf.net_mode).to(conf.device)
             print('{}_{} model generated'.format(conf.net_mode, conf.net_depth))
+        state_dict = torch.load(conf.model_path, map_location=torch.device('cpu'))
+        del_keys = ['linear.weight', 'bn.weight', 'bn.bias', 'bn.running_mean', 'bn.running_var']
+        for s in del_keys:
+            del state_dict[s]
+        self.model.load_state_dict(state_dict, strict=False)
         
         if not inference:
             self.milestones = conf.milestones

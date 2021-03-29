@@ -202,14 +202,6 @@ class Residual(Module):
     def forward(self, x):
         return self.model(x)
 
-class SPD(Module):
-
-    def forward(self, x):
-        out = torch.zeros_like(x)
-        for i in range(x.shape[0]):
-            out[i, :, :] = torch.matmul(x[i, :, :], x[i, :, :].permute((1, 0)))
-        return out
-
 class MobileFaceNet(Module):
 
     def __init__(self, embedding_size):
@@ -228,7 +220,6 @@ class MobileFaceNet(Module):
         self.linear = Linear(512, embedding_size, bias=False)
         self.bn = BatchNorm1d(embedding_size)
         self.spd_dim = (-1, int(math.sqrt(embedding_size)), int(math.sqrt(embedding_size)))
-        self.spd = SPD()
         self.mlog = MatrixLog()
     
     def forward(self, x):
@@ -260,7 +251,8 @@ class MobileFaceNet(Module):
 
         out = out.reshape(self.spd_dim)
 
-        out = self.spd(out)
+        # spd projection from generate out matrix
+        out = out @ out.permute(0, 2, 1)
 
         out = self.mlog(out)
 
@@ -278,15 +270,13 @@ class Arcface(Module):
         self.kernel = Parameter(torch.Tensor(classnum, spd_dim, spd_dim))
         # initial kernel
         self.kernel.data.uniform_(-1, 1).renorm_(2,1,1e-5).mul_(1e5)
-        self.spd = SPD()
         self.mlog = MatrixLog()
         self.norm = FrobeniusNorm()
         self.m = m # the margin value
 
     def forward(self, embbedings, label):
-        # weights norm
-        # kernel_transpose = self.kernel.permute(0, 2, 1)
-        kernel_spd = torch.matmul(self.kernel, self.kernel)
+        # project kernel to spd matrix
+        kernel_spd = self.kernel @ self.kernel.permute(0, 2, 1)
         kernel_log = self.mlog(kernel_spd)
         output = self.norm(embbedings, kernel_log)
 

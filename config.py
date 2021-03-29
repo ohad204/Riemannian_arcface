@@ -8,7 +8,7 @@ def get_config(training = True):
     conf = edict()
     conf.data_path = Path('/media/ohad/TV')
     conf.work_path = Path('work_space/')
-    conf.model_path = Path('/home/ohad/Documents/CV_projects/Riemannian_arcface/models')
+    conf.model_path = Path('/home/ohad/Documents/CV_projects/Riemannian_arcface/models/model_mobilefacenet.pth')
     conf.log_path = conf.work_path/'log'
     conf.save_path = conf.work_path/'save'
     conf.input_size = [112,112]
@@ -38,7 +38,7 @@ def get_config(training = True):
         conf.momentum = 0.9
         conf.pin_memory = True
 #         conf.num_workers = 4 # when batchsize is 200
-        conf.num_workers = 3
+        conf.num_workers = 2
         conf.ce_loss = CrossEntropyLoss()    
 #--------------------Inference Config ------------------------
     else:
