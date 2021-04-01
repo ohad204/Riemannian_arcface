@@ -6,6 +6,7 @@ import torch
 from collections import namedtuple
 import math
 import pdb
+from rimannian_dist.m_log import EigLayer, M_Log
 
 ##################################  Original Arcface Model #############################################################
 
@@ -263,7 +264,7 @@ class MobileFaceNet(Module):
 class Arcface(Module):
 
     # implementation of additive margin softmax loss in https://arxiv.org/abs/1801.05599    
-    def __init__(self, embedding_size=512, classnum=51332, m=10):
+    def __init__(self, embedding_size=512, classnum=51332, m=0):
         super(Arcface, self).__init__()
         spd_dim = int(math.sqrt(embedding_size))
         self.classnum = classnum
@@ -289,12 +290,17 @@ class Arcface(Module):
 ##################################  Riemanian Distance #############################################################
 
 class MatrixLog(Module):
+    def __init__(self):
+        super(MatrixLog, self).__init__()
+        self.eiglayer = EigLayer()
+        self.mlog = M_Log()
 
     def forward(self, spd):
-        # S, U = self.eiglayer(spd)
-        S, U = torch.symeig(spd, eigenvectors=True)
-        S_log = torch.log(S)
-        S_log = torch.stack([torch.diag(s) for s in S_log], 0)
+        S, U = self.eiglayer(spd)
+        S_log = self.mlog(S)
+        # S, U = torch.symeig(spd, eigenvectors=True)
+        # S_log = torch.log(S)
+        # S_log = torch.stack([torch.diag(s) for s in S_log], 0)
         spd_log = torch.matmul(torch.matmul(U, S_log), U.permute(0, 2, 1))
 
         return spd_log
